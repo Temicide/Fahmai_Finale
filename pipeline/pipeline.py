@@ -141,15 +141,35 @@ def main():
 
         # --- Guardrail: pre-query assessment ---
         gr = assess_query(question)
+        if gr.risk_level == "caution":
+            console.print(
+                f"[bold yellow][GUARDRAIL CAUTION][/] score={gr.risk_score:.2f} "
+                f"pattern={gr.pattern_label} — passing through"
+            )
+        elif gr.risk_level == "suspicious":
+            llm_v = gr.llm_verdict.get("verdict", "unknown") if gr.llm_verdict else "unavailable"
+            console.print(
+                f"[bold yellow][GUARDRAIL SUSPICIOUS][/] score={gr.risk_score:.2f} "
+                f"pattern={gr.pattern_label} | LLM verdict: {llm_v}"
+            )
         if not gr.is_safe:
-            console.print(f"[bold red][GUARDRAIL BLOCKED][/] {gr.reason} (pattern: {gr.pattern_label})")
-            answer = "ไม่มีข้อมูลนี้ในระบบของฟ้าใหม่"
+            console.print(f"[bold red][GUARDRAIL BLOCKED][/] {gr.reason} — passing annotated to agent")
+            annotated = f"[GUARDRAIL-INJECTION-DETECTED: pattern={gr.pattern_label}]\n\n{question}"
+            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=False) as progress:
+                progress.add_task("Agent reasoning (injection detected)...", total=None)
+                t_start = time.time()
+                result = run_question(annotated, verbose=args.verbose)
+                elapsed = time.time() - t_start
+                progress.stop()
+            answer = result["answer"]
+            console.print(f"[bold green]Answer:[/] {answer}")
+            console.print(f"[dim]({result['iterations']} iterations, {result['tool_calls']} tool calls, {elapsed:.1f}s)[/]\n")
             results.append({
                 "id": qid,
                 "response": answer,
-                "iterations": 0,
-                "tool_calls": 0,
-                "time": 0.0,
+                "iterations": result["iterations"],
+                "tool_calls": result["tool_calls"],
+                "time": elapsed,
             })
             continue
 

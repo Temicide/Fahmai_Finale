@@ -104,6 +104,7 @@ class AgentState(TypedDict):
     messages: list[dict[str, Any]]
     question: str
     iteration_count: int
+    total_output_tokens: int
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +166,12 @@ def call_model(state: AgentState) -> AgentState:
             "content": msg.content or "",
         })
 
+    tokens = response.usage.completion_tokens if response.usage else 0
     return {
         "messages": new_messages,
         "question": state["question"],
         "iteration_count": state["iteration_count"] + 1,
+        "total_output_tokens": state["total_output_tokens"] + tokens,
     }
 
 
@@ -206,6 +209,7 @@ def execute_tools(state: AgentState) -> AgentState:
         "messages": new_messages,
         "question": state["question"],
         "iteration_count": state["iteration_count"],
+        "total_output_tokens": state["total_output_tokens"],
     }
 
 
@@ -271,6 +275,7 @@ def run_question(question: str, verbose: bool = False) -> dict[str, Any]:
         "messages": [{"role": "user", "content": question}],
         "question": question,
         "iteration_count": 0,
+        "total_output_tokens": 0,
     }
 
     result = agent.invoke(initial_state)
@@ -301,4 +306,5 @@ def run_question(question: str, verbose: bool = False) -> dict[str, Any]:
         "answer": final_answer,
         "iterations": result["iteration_count"],
         "tool_calls": len(tool_calls_made),
+        "total_output_tokens": result.get("total_output_tokens", 0),
     }
