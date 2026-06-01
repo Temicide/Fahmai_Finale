@@ -69,46 +69,62 @@ def _load_all_tables(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool: list_tables
+# Tool: explore_schema (consolidated list_tables + get_table_schema)
 # ---------------------------------------------------------------------------
 
-def list_tables() -> str:
-    """List all available dimension and fact tables with brief descriptions."""
+def explore_schema(table_name: str = "", include_sample: bool = False) -> str:
+    """Explore the database schema. Without parameters, lists all tables with row/column counts.
+    With table_name, shows detailed column schema and optional sample rows.
+    Use this tool before writing SQL queries to understand available data."""
     conn = _get_db()
-    tables = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='main' ORDER BY table_name").fetchall()
-    lines = ["Available tables:\n"]
-    for (name,) in tables:
-        row_count = conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
-        cols = [c[0] for c in conn.execute(f'DESCRIBE "{name}"').fetchall()]
-        prefix = "DIM" if name.startswith("DIM") else "FACT" if name.startswith("FACT") else "  "
-        lines.append(f"  [{prefix}] {name}  ({row_count} rows, {len(cols)} cols)")
-    return "\n".join(lines)
 
+    if not table_name:
+        tables = conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema='main' ORDER BY table_name"
+        ).fetchall()
+        lines = ["Available tables:\n"]
+        for (name,) in tables:
+            row_count = conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
+            cols = [c[0] for c in conn.execute(f'DESCRIBE "{name}"').fetchall()]
+            prefix = "DIM" if name.startswith("DIM") else "FACT" if name.startswith("FACT") else "  "
+            lines.append(f"  [{prefix}] {name}  ({row_count} rows, {len(cols)} cols)")
+        return "\n".join(lines)
 
-# ---------------------------------------------------------------------------
-# Tool: get_table_schema
-# ---------------------------------------------------------------------------
-
-def get_table_schema(table_name: str) -> str:
-    """Get the column schema for a specific table."""
-    conn = _get_db()
     try:
         rows = conn.execute(f'DESCRIBE "{table_name}"').fetchall()
         cols = [f"  {r[0]:<40s} {r[1]}" for r in rows]
-        return f"Schema for {table_name} ({len(cols)} columns):\n" + "\n".join(cols)
+        lines = [f"Schema for {table_name} ({len(cols)} columns):", ""]
+        lines.extend(cols)
+
+        if include_sample:
+            try:
+                sample = conn.execute(f'SELECT * FROM "{table_name}" LIMIT 3').fetchall()
+                col_names = [r[0] for r in rows]
+                lines.append("")
+                lines.append(f"Sample rows (showing up to 3):")
+                for s_row in sample:
+                    sample_parts = [f"  {col_names[i]}: {s_row[i]}" for i in range(len(col_names))]
+                    lines.append("---")
+                    lines.extend(sample_parts)
+            except Exception:
+                lines.append("")
+                lines.append("(Could not fetch sample rows)")
+
+        return "\n".join(lines)
     except Exception as e:
-        return f"Error: {e}"
+        return f"Table '{table_name}' not found. Use explore_schema() to list available tables. Error: {e}"
 
 
 # ---------------------------------------------------------------------------
-# Tool: query_csv (the primary SQL tool)
+# Tool: query_sql (formerly query_csv)
 # ---------------------------------------------------------------------------
 
-def query_csv(sql: str) -> str:
-    """Execute a SQL query against the FahMai data warehouse (DuckDB in-memory).
+def query_sql(sql: str, format: str = "table") -> str:
+    """Execute a SQL query against the FahMai data warehouse (DuckDB).
     All dimension and fact tables are pre-loaded. Use standard SQL syntax.
     Column names are case-sensitive and match CSV headers exactly.
-    Results are limited to 200 rows. Use LIMIT and OFFSET if you need more.
+    Results limited to 200 rows by default. Use LIMIT/OFFSET for more.
+    This is the primary tool for any data lookup, aggregation, or analysis.
     """
     conn = _get_db()
     try:
@@ -122,17 +138,38 @@ def query_csv(sql: str) -> str:
         if not rows:
             return "(empty result — no rows returned)"
 
-        # Format as markdown table
+        if format == "csv":
+            out = [",".join(columns)]
+            for r in rows:
+                out.append(",".join(f'"{v}"' for v in r))
+            out.append(f"\n({len(rows)} rows" + (" — truncated" if truncated else "") + ")")
+            return "\n".join(out)
+
+        if format == "json":
+            import json as _json
+            data = [{col: r[i] for i, col in enumerate(columns)} for r in rows]
+            result_obj = {"rows": data, "count": len(rows), "truncated": truncated}
+            return _json.dumps(result_obj, ensure_ascii=False, indent=2)
+
+        # Default: markdown table
         col_widths = [max(len(str(c)), max(len(str(r[i])) for r in rows)) for i, c in enumerate(columns)]
         header = "| " + " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(columns)) + " |"
         sep = "|-" + "-|-".join("-" * col_widths[i] for i in range(len(columns))) + "-|"
-        data_lines = ["| " + " | ".join(str(r[i]).ljust(col_widths[i]) for i in range(len(columns))) + " |" for r in rows]
-
+        data_lines = [
+            "| " + " | ".join(str(r[i]).ljust(col_widths[i]) for i in range(len(columns))) + " |"
+            for r in rows
+        ]
         out = [header, sep] + data_lines
         out.append(f"\n({len(rows)} rows" + (" — truncated, use LIMIT/OFFSET for more" if truncated else "") + ")")
         return "\n".join(out)
     except Exception as e:
-        return f"SQL Error: {e}"
+        err = str(e)
+        hint = ""
+        if "not found" in err.lower():
+            hint = "Hint: Use explore_schema() to list available tables and check column names."
+        elif "column" in err.lower() and "not found" in err.lower():
+            hint = "Hint: Use explore_schema(table_name='...') to check column names. Column names are case-sensitive."
+        return f"SQL Error: {err}\n{hint}".rstrip()
 
 
 # ---------------------------------------------------------------------------
@@ -188,20 +225,28 @@ def _extract_date_from_filename(filename: str) -> str | None:
     return m.group(1) if m else None
 
 
-def search_docs(keywords: str = "", date_from: str = "", date_to: str = "", doc_kind: str = "") -> str:
-    """Search structured documents (memos, minutes, emails, policies, product specs, reports).
-    
+def search_documents(
+    keywords: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    doc_kind: str = "all",
+    return_content: bool = False,
+) -> str:
+    """Search structured documents: memos, meeting minutes, emails, policies,
+    product specs, and reports. Use for finding company policies, internal
+    communications, or documentation. Supports keyword search, date filtering,
+    and document type filtering. Set return_content=true to get full document text.
+
     Parameters:
-    - keywords: space-separated search terms (matched case-insensitively in content)
+    - keywords: space-separated search terms (case-insensitive, OR logic). Leave empty to match all.
     - date_from / date_to: filter by document date (YYYY-MM-DD format)
-    - doc_kind: filter by type — 'memo', 'minutes', 'email', 'policy', 'product_spec', 'report', 'store_info'
-    
-    Returns matching document list with paths and content previews.
+    - doc_kind: filter by type — 'memo', 'minutes', 'email', 'policy', 'product_spec', 'report', 'store_info', 'all'
+    - return_content: if true, return full content of first matching document; if false, return list with previews
     """
     idx = _build_doc_index()
     results = idx.copy()
 
-    if doc_kind:
+    if doc_kind and doc_kind != "all":
         results = [d for d in results if d["kind"] == doc_kind]
     if date_from:
         results = [d for d in results if d.get("date") and d["date"] >= date_from]
@@ -217,7 +262,20 @@ def search_docs(keywords: str = "", date_from: str = "", date_to: str = "", doc_
         results = filtered
 
     if not results:
-        return f"No documents found. (Searched: kind={doc_kind or 'all'}, date={date_from or 'any'}→{date_to or 'any'}, keywords='{keywords}')"
+        return (
+            f"No documents found. "
+            f"(Searched: kind={doc_kind}, date={date_from or 'any'}→{date_to or 'any'}, keywords='{keywords}')"
+            f"\nHint: Try broader date range or different keywords. Use search_documents(doc_kind='all') to see all documents."
+        )
+
+    if return_content:
+        d = results[0]
+        content = d["full_content"][:8000]
+        return (
+            f"[{d['kind']}] {d['filename']}"
+            + (f"\nDate: {d['date']}" if d.get("date") else "")
+            + f"\n\n{content}"
+        )
 
     results = results[:MAX_DOC_SEARCH_RESULTS]
     lines = [f"Found {len(results)} documents:"]
@@ -228,23 +286,6 @@ def search_docs(keywords: str = "", date_from: str = "", date_to: str = "", doc_
             lines.append(f"    Date: {d['date']}")
         lines.append(f"    Preview: {preview}...")
     return "\n".join(lines)
-
-
-def read_doc(file_path: str) -> str:
-    """Read the full content of a specific document. Use the path from search_docs results."""
-    try:
-        path = Path(file_path)
-        if not path.exists():
-            # Try resolving relative to docs/
-            path = DOCS_DIR / file_path
-        if not path.exists():
-            path = REPORTS_DIR / file_path
-        if not path.exists():
-            return f"Document not found: {file_path}"
-        content = path.read_text(encoding="utf-8")
-        return content[:8000]  # Cap at 8k chars to avoid context overflow
-    except Exception as e:
-        return f"Error reading document: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -281,21 +322,26 @@ def search_chats(
     date_from: str = "",
     date_to: str = "",
     source: str = "both",
-    max_files: int = MAX_CHAT_SEARCH_RESULTS,
+    return_content: bool = False,
+    max_results: int = MAX_CHAT_SEARCH_RESULTS,
 ) -> str:
-    """Search LINE OA (customer chats) and LINE WORKS (internal team chats).
+    """Search LINE OA (customer) and LINE WORKS (internal team) chat transcripts.
+
+    Uses date pre-filtering from filenames for speed, then keyword search.
+    Set return_content=true to get full chat text of the first match.
+    Use for finding internal discussions, incident reports, customer feedback,
+    or explanations for data anomalies.
 
     The search uses a two-phase approach optimized for 53k+ files:
     1. DATE pre-filter: extracts YYYY-MM-DD from filenames (fast, no file read)
     2. KEYWORD grep: reads only date-matching files and searches content
 
     Parameters:
-    - keywords: space-separated terms (all must match)
+    - keywords: space-separated terms (OR logic - any keyword matches)
     - date_from / date_to: YYYY-MM-DD range (uses filename date, fast)
     - source: 'line_oa', 'line_works', or 'both' (default)
-    - max_files: maximum number of matching files to return
-
-    Returns file paths with content snippets.
+    - return_content: if true, return full content of first matching chat; if false, return list with snippets
+    - max_results: maximum number of matching files to return (when return_content=false)
     """
     idx = _build_chat_index()
 
@@ -310,7 +356,6 @@ def search_chats(
 
     for src_label, files in sources:
         for fp in files:
-            # Phase 1: date filter from filename
             fname = fp.name
             date_in_name = _extract_date_from_filename(fname)
             if date_from and (not date_in_name or date_in_name < date_from):
@@ -319,58 +364,49 @@ def search_chats(
                 continue
 
             if not kw_list:
-                matches.append((src_label, fp, "", date_in_name))
-                if len(matches) >= max_files:
+                matches.append((src_label, fp, "", date_in_name, ""))
+                if len(matches) >= max_results:
                     break
                 continue
 
-            # Phase 2: keyword search in content (OR logic — any keyword matches)
             try:
                 content = fp.read_text(encoding="utf-8")
                 content_lower = content.lower()
                 if any(kw in content_lower for kw in kw_list):
                     matching_kw = next(kw for kw in kw_list if kw in content_lower)
                     snippet = _extract_snippet(content, matching_kw)
-                    matches.append((src_label, fp, snippet, date_in_name))
+                    matches.append((src_label, fp, snippet, date_in_name, content))
             except Exception:
                 continue
 
-            if len(matches) >= max_files:
+            if len(matches) >= max_results:
                 break
-        if len(matches) >= max_files:
+        if len(matches) >= max_results:
             break
 
     if not matches:
         return (
             f"No chat threads found. "
             f"(source={source}, date={date_from or 'any'}→{date_to or 'any'}, keywords='{keywords}')"
+            f"\nHint: Try broader date range or different keywords."
+        )
+
+    if return_content:
+        src_label, fp, snippet, date_in_name, content = matches[0]
+        return (
+            f"[{src_label}] {fp.name}"
+            + (f"\nDate: {date_in_name}" if date_in_name else "")
+            + f"\n\n{content[:10000]}"
         )
 
     lines = [f"Found {len(matches)} chat threads:\n"]
-    for src_label, fp, snippet, date_in_name in matches[:max_files]:
-        fname = fp.name
-        lines.append(f"  [{src_label}] {fname}")
+    for src_label, fp, snippet, date_in_name, _content in matches[:max_results]:
+        lines.append(f"  [{src_label}] {fp.name}")
         if date_in_name:
             lines.append(f"    Date: {date_in_name}")
         if snippet:
             lines.append(f"    Snippet: {snippet[:200]}...")
     return "\n".join(lines)
-
-
-def read_chat(file_path: str, source: str = "line_oa") -> str:
-    """Read a full chat transcript. source should be 'line_oa' or 'line_works'."""
-    base = DOCS_DIR / f"chat_{source}"
-    path = base / file_path
-    if not path.exists():
-        path = Path(file_path)
-    if not path.exists():
-        return f"Chat file not found: {file_path}"
-
-    try:
-        content = path.read_text(encoding="utf-8")
-        return content[:10000]  # Cap at 10k chars
-    except Exception as e:
-        return f"Error reading chat: {e}"
 
 
 def _extract_snippet(text: str, keyword: str, context_chars: int = 200) -> str:
@@ -384,73 +420,226 @@ def _extract_snippet(text: str, keyword: str, context_chars: int = 200) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool: lookup_policy
+# ---------------------------------------------------------------------------
+
+def lookup_policy(policy_type: str, effective_date: str = "", vendor_id: str = "") -> str:
+    """Look up company policies, contract versions, and reference data that change over time.
+    Use for questions about refund policies, loyalty program rates, return windows,
+    or vendor contracts effective at specific dates. Handles date-range logic automatically.
+    """
+    conn = _get_db()
+
+    if policy_type in ("refund", "loyalty", "return", "all"):
+        where_clauses = []
+        if policy_type == "refund":
+            where_clauses.append("(LOWER(policy_variable) LIKE '%refund%' OR LOWER(policy_class) = 'signing_authority')")
+        elif policy_type == "loyalty":
+            where_clauses.append("(LOWER(policy_variable) LIKE '%point%' OR LOWER(policy_variable) LIKE '%loyalty%' OR LOWER(policy_class) = 'membership')")
+        elif policy_type == "return":
+            where_clauses.append("(LOWER(policy_variable) LIKE '%return%' OR LOWER(policy_class) = 'return')")
+
+        if effective_date:
+            where_clauses.append(f"effective_date <= '{effective_date}'")
+            where_clauses.append(f"(end_date IS NULL OR end_date >= '{effective_date}')")
+
+        sql = (
+            "SELECT policy_version_id, policy_class, policy_variable, "
+            "scope_filter, value_numeric, value_text, policy_value_table_ref, "
+            "effective_date, end_date "
+            "FROM DIM_POLICY_VERSION"
+        )
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+        sql += " ORDER BY effective_date DESC"
+
+        try:
+            result = conn.execute(sql).fetchall()
+        except Exception as e:
+            return f"Error querying policies: {e}"
+
+        if not result:
+            return f"No {policy_type} policy found" + (f" for date {effective_date}" if effective_date else "") + "."
+
+        lines = [f"Policy: {policy_type}"]
+        if effective_date:
+            lines.append(f"Effective date: {effective_date}")
+        lines.append("")
+        for row in result:
+            lines.append(f"Version: {row[0]} | Class: {row[1]} | Effective: {row[7]} to {row[8] or 'present'}")
+            value = row[4] if row[4] else row[5] if row[5] else f"ref → {row[6]}" if row[6] else "N/A"
+            lines.append(f"  {row[2]}: {value}")
+            if row[3] and row[3] != "global":
+                lines.append(f"  Scope: {row[3]}")
+        return "\n".join(lines)
+
+    elif policy_type == "vendor_contract":
+        if not vendor_id:
+            return "Error: vendor_id parameter is required for vendor_contract policy_type."
+
+        where_clauses = [f"vendor_id = '{vendor_id}'"]
+        if effective_date:
+            where_clauses.append(f"effective_date <= '{effective_date}'")
+            where_clauses.append(f"(end_date IS NULL OR end_date >= '{effective_date}')")
+
+        sql = (
+            "SELECT contract_version_id, vendor_id, version_number, "
+            "effective_date, end_date, amendment_summary "
+            "FROM DIM_VENDOR_CONTRACT_VERSION WHERE "
+        ) + " AND ".join(where_clauses) + " ORDER BY effective_date DESC"
+
+        try:
+            result = conn.execute(sql).fetchall()
+        except Exception as e:
+            return f"Error querying contracts: {e}"
+
+        if not result:
+            return f"No contract found for vendor {vendor_id}" + (f" on date {effective_date}" if effective_date else "") + "."
+
+        lines = [f"Vendor Contract: {vendor_id}"]
+        if effective_date:
+            lines.append(f"Effective date: {effective_date}")
+        lines.append("")
+        for row in result:
+            lines.append(f"Version: {row[0]}  (v{row[2]}) | Period: {row[3]} to {row[4] or 'present'}")
+            if row[5]:
+                lines.append(f"  Amendment: {row[5]}")
+        return "\n".join(lines)
+
+    else:
+        return "Error: Invalid policy_type. Use 'refund', 'loyalty', 'return', 'vendor_contract', or 'all'."
+
+
+# ---------------------------------------------------------------------------
 # Tool registry (exported for the agent)
 # ---------------------------------------------------------------------------
 
 # Map of tool_name -> (function, description, parameter_schema)
 TOOLS = {
-    "list_tables": {
-        "fn": list_tables,
-        "description": "List all available dimension and fact tables with row counts and column counts.",
-        "parameters": {},
-    },
-    "get_table_schema": {
-        "fn": get_table_schema,
-        "description": "Get column names and types for a specific table. Use before writing queries.",
-        "parameters": {
-            "table_name": {"type": "string", "description": "Name of the table (e.g., 'DIM_PRODUCT', 'FACT_SALES')"}
-        },
-    },
-    "query_csv": {
-        "fn": query_csv,
+    "explore_schema": {
+        "fn": explore_schema,
         "description": (
-            "Execute a SQL query against the FahMai data warehouse. "
-            "All tables are pre-loaded. Use standard DuckDB SQL. "
-            "Column names are case-sensitive. Always use this tool for any data lookup or aggregation."
+            "Explore the database schema. Without parameters, lists all tables with row/column counts. "
+            "With table_name, shows detailed column schema and optional sample rows. "
+            "Use this tool before writing SQL queries to understand available data."
         ),
         "parameters": {
-            "sql": {"type": "string", "description": "A valid DuckDB SQL SELECT query. Use single quotes for strings."}
+            "table_name": {
+                "type": "string",
+                "description": "Optional. Table name for detailed schema (e.g., 'DIM_PRODUCT', 'FACT_SALES'). Omit to list all tables.",
+            },
+            "include_sample": {
+                "type": "boolean",
+                "description": "Include 3 sample rows (single table mode only).",
+            },
         },
     },
-    "search_docs": {
-        "fn": search_docs,
+    "query_sql": {
+        "fn": query_sql,
         "description": (
-            "Search structured documents: memos, meeting minutes, company emails, "
-            "policies, product specs, and reports. Use keyword + date + type filters."
+            "Execute a SQL query against the FahMai data warehouse (DuckDB). "
+            "All dimension and fact tables are pre-loaded. Use standard SQL syntax. "
+            "Column names are case-sensitive and match CSV headers exactly. "
+            "Results limited to 200 rows by default. Use LIMIT/OFFSET for more. "
+            "This is the primary tool for any data lookup, aggregation, or analysis."
         ),
         "parameters": {
-            "keywords": {"type": "string", "description": "Space-separated search terms (case-insensitive). Leave empty to match all."},
-            "date_from": {"type": "string", "description": "Filter documents from this date (YYYY-MM-DD). Optional."},
-            "date_to": {"type": "string", "description": "Filter documents up to this date (YYYY-MM-DD). Optional."},
-            "doc_kind": {"type": "string", "description": "Document type: 'memo', 'minutes', 'email', 'policy', 'product_spec', 'report'. Optional."},
+            "sql": {
+                "type": "string",
+                "description": "A valid DuckDB SQL SELECT query. Use single quotes for strings. Always CAST numeric columns (stored as VARCHAR) to DECIMAL before math.",
+            },
+            "format": {
+                "type": "string",
+                "description": "Output format: 'table' (markdown, default), 'csv', or 'json'.",
+            },
         },
     },
-    "read_doc": {
-        "fn": read_doc,
-        "description": "Read the full content of a document found via search_docs.",
+    "search_documents": {
+        "fn": search_documents,
+        "description": (
+            "Search structured documents: memos, meeting minutes, emails, policies, "
+            "product specs, and reports. Use for finding company policies, internal "
+            "communications, or documentation. Supports keyword search, date filtering, "
+            "and document type filtering. Set return_content=true to get full document text."
+        ),
         "parameters": {
-            "file_path": {"type": "string", "description": "Path to the document file."}
+            "keywords": {
+                "type": "string",
+                "description": "Space-separated search terms (case-insensitive, OR logic). Leave empty to match all.",
+            },
+            "date_from": {
+                "type": "string",
+                "description": "Filter documents from this date (YYYY-MM-DD). Optional.",
+            },
+            "date_to": {
+                "type": "string",
+                "description": "Filter documents up to this date (YYYY-MM-DD). Optional.",
+            },
+            "doc_kind": {
+                "type": "string",
+                "description": "Document type filter: 'memo', 'minutes', 'email', 'policy', 'product_spec', 'report', 'store_info', or 'all'. Default: 'all'.",
+            },
+            "return_content": {
+                "type": "boolean",
+                "description": "Return full content of first match (true) or list with previews (false). Default: false.",
+            },
         },
     },
     "search_chats": {
         "fn": search_chats,
         "description": (
             "Search LINE OA (customer) and LINE WORKS (internal team) chat transcripts. "
-            "Uses date pre-filtering from filenames for speed, then keyword search in content."
+            "Uses date pre-filtering from filenames for speed, then keyword search. "
+            "Use for finding internal discussions, incident reports, customer feedback, "
+            "or explanations for data anomalies. Set return_content=true to get full chat text."
         ),
         "parameters": {
-            "keywords": {"type": "string", "description": "Space-separated search terms."},
-            "date_from": {"type": "string", "description": "Start date YYYY-MM-DD. Optional."},
-            "date_to": {"type": "string", "description": "End date YYYY-MM-DD. Optional."},
-            "source": {"type": "string", "description": "'line_oa', 'line_works', or 'both' (default)."},
+            "keywords": {
+                "type": "string",
+                "description": "Space-separated search terms (OR logic — any keyword match).",
+            },
+            "date_from": {
+                "type": "string",
+                "description": "Start date (YYYY-MM-DD). Optional. Fast pre-filter using filename date.",
+            },
+            "date_to": {
+                "type": "string",
+                "description": "End date (YYYY-MM-DD). Optional. Fast pre-filter using filename date.",
+            },
+            "source": {
+                "type": "string",
+                "description": "Chat source: 'line_oa' (customer), 'line_works' (internal team), or 'both' (default).",
+            },
+            "return_content": {
+                "type": "boolean",
+                "description": "Return full content of first matching chat (true) or list with snippets (false). Default: false.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of matching files to return when return_content=false. Default: 20.",
+            },
         },
     },
-    "read_chat": {
-        "fn": read_chat,
-        "description": "Read a full chat transcript file found via search_chats.",
+    "lookup_policy": {
+        "fn": lookup_policy,
+        "description": (
+            "Look up company policies, contract versions, and reference data that change over time. "
+            "Use for questions about refund policies, loyalty program rates, return windows, "
+            "or vendor contracts effective at specific dates. Handles date-range logic automatically."
+        ),
         "parameters": {
-            "file_path": {"type": "string", "description": "Filename of the chat transcript."},
-            "source": {"type": "string", "description": "'line_oa' or 'line_works'."},
+            "policy_type": {
+                "type": "string",
+                "description": "Type of policy or contract: 'refund', 'loyalty', 'return', 'vendor_contract', or 'all'.",
+            },
+            "effective_date": {
+                "type": "string",
+                "description": "Date to check policy/contract effectiveness (YYYY-MM-DD). If omitted, returns all versions.",
+            },
+            "vendor_id": {
+                "type": "string",
+                "description": "For vendor_contract type, specify vendor ID (e.g., 'V-013'). Optional for other types.",
+            },
         },
     },
 }

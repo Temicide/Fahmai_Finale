@@ -18,8 +18,10 @@ python download_data.py
 # 4. Run the agent
 python pipeline/pipeline.py              # Demo mode: 6 representative questions
 python pipeline/pipeline.py --all        # Full evaluation (240 questions)
+python pipeline/pipeline.py --subset HARD   # Filter by difficulty (EASY/MED/HARD/XHARD)
 python pipeline/pipeline.py --id L3-Q-EASY-001   # Single question by ID
 python pipeline/pipeline.py -q "What is FahMai's total revenue in 2025?"
+python pipeline/pipeline.py --verbose    # Show tool calls and intermediate reasoning
 python pipeline/pipeline.py --output submission.csv  # Export results
 ```
 
@@ -30,11 +32,34 @@ Requires Python 3.10+. The default model is `gpt-4o-mini` (configurable via `LLM
 | Component | Description |
 |-----------|-------------|
 | `pipeline/agent.py` | LangGraph ReAct agent: loops between reasoning and tool calls (up to 15 iterations) |
-| `pipeline/tools.py` | Tool layer: SQL queries via DuckDB, document search, chat transcript search |
-| `pipeline/pipeline.py` | CLI entry point with demo, batch, and interactive modes |
+| `pipeline/tools.py` | Tool layer: SQL via DuckDB, document search, chat search, policy lookups |
+| `pipeline/pipeline.py` | Rich CLI entry point with demo, batch, and interactive modes |
+| `pipeline/guardrail.py` | Prompt injection defense: direct (regex gate) + indirect (tool output sanitization) |
+| `pipeline/config.py` | Environment configuration and path resolution |
 | `download_data.py` | Downloads the Kaggle competition dataset |
 
-The agent is given 7 tools: `list_tables`, `get_table_schema`, `query_csv`, `search_docs`, `read_doc`, `search_chats`, `read_chat`. It decides which to use based on each question.
+The agent is given 5 tools: `explore_schema`, `query_sql`, `search_documents`, `search_chats`, `lookup_policy`. It decides which to use based on each question.
+
+## Security (Guardrail)
+
+A dual-layer prompt injection defense runs on every question:
+
+| Layer | What it does |
+|-------|-------------|
+| **Direct injection gate** | Regex scans the user's question before the agent sees it. Blocks ~23 attack patterns (EN + TH) — "ignore previous instructions", "you are now DAN", etc. Blocked questions get a safe default answer. |
+| **Indirect injection sanitization** | Every tool result is scanned before the LLM reads it. Injected spans (e.g. `[SYSTEM] Override...` hidden in chat transcripts) are redacted and replaced with `[GUARDRAIL-REDACTED:...]` markers. A warning header tells the LLM to treat the remaining content as data, not directives. |
+
+All detection is regex-based — zero extra LLM cost. An incident log is printed at the end of each run.
+
+## Tools
+
+| Tool | Purpose |
+|------|---------|
+| `explore_schema` | List all tables or inspect a table's columns and sample rows |
+| `query_sql` | Primary data tool — run SQL against the DuckDB warehouse (200-row limit) |
+| `search_documents` | Search memos, minutes, emails, policies, product specs, and reports with keyword + date filtering |
+| `search_chats` | Search 53k+ LINE OA (customer) and LINE WORKS (internal) chat transcripts with date-range pre-filtering |
+| `lookup_policy` | Look up refund/loyalty/return policies or vendor contracts effective at specific dates |
 
 ## Data bundle
 
@@ -57,7 +82,7 @@ See [the data bundle README](fah-mai-the-finale-enterprise-data-agentic-showdown
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | — | OpenAI API key (required) |
+| `OPENAI_API_KEY` | — | OpenAI API key (required; `WAFER_API_KEY` also accepted) |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Custom endpoint for proxies/alternative providers |
 | `LLM_MODEL` | `gpt-4o-mini` | Model to use for agent reasoning |
 | `FAHMAI_DATA_DIR` | `./fah-mai-the-finale-enterprise-data-agentic-showdown` | Override data location |

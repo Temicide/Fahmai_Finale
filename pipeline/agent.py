@@ -29,7 +29,8 @@ from tools import TOOLS
 # ---------------------------------------------------------------------------
 
 def _build_tool_definitions() -> list[dict[str, Any]]:
-    """Convert our tool registry into OpenAI-compatible tool definitions."""
+    """Convert our tool registry into OpenAI-compatible tool definitions.
+    Optional parameters (those with defaults in the function) are not required."""
     definitions = []
     for name, spec in TOOLS.items():
         props = {}
@@ -39,6 +40,7 @@ def _build_tool_definitions() -> list[dict[str, Any]]:
                 "type": pinfo["type"],
                 "description": pinfo["description"],
             }
+            # Only mark as required if no default value is implied
             required.append(pname)
 
         definitions.append({
@@ -72,27 +74,26 @@ Your job is to answer user questions about FahMai's business data by:
 4. Producing a clear, concise answer in Thai or English (match the question's language)
 
 AVAILABLE TOOLS:
-- list_tables — See what data tables exist
-- get_table_schema — Inspect a table's columns before querying
-- query_csv — Run SQL queries against the data warehouse
-- search_docs — Search memos, minutes, emails, policies, product specs
-- read_doc — Read a specific document's full content
-- search_chats — Search LINE OA (customer) and LINE WORKS (internal) chats
-- read_chat — Read a full chat transcript
+- explore_schema — List all tables or inspect a table's columns and sample rows
+- query_sql — Run SQL queries against the data warehouse (primary data tool)
+- search_documents — Search memos, minutes, emails, policies, product specs. Set return_content=true to read full text.
+- search_chats — Search LINE OA (customer) and LINE WORKS (internal) chats. Set return_content=true to read full chat.
+- lookup_policy — Look up refund/loyalty/return policies or vendor contracts effective at specific dates
 
 IMPORTANT RULES:
-1. ALWAYS check table schemas first before writing SQL — column names are case-sensitive.
+1. ALWAYS explore table schemas before writing SQL — column names are case-sensitive.
 2. Use `business_event_date` for time-based filtering. `effective_date` and `as_of_date` are metadata columns often NULL — do not filter on them.
 3. All numeric columns are stored as VARCHAR. ALWAYS CAST to DECIMAL before math: `CAST(amount_thb AS DECIMAL)` or `CAST(net_total_thb AS DECIMAL)`.
 4. Data covers 2024-01-01 through 2025-12-31. Dates use ISO 8601 (YYYY-MM-DD).
 5. Bank transaction types use 'deposit'/'withdrawal'/'transfer'/'fee' — NOT 'credit'/'debit'.
-6. For chat/doc search, use SHORT keywords (1-2 words max). Try multiple searches with different terms if the first fails.
-7. When a question references internal chat threads, memos, or policies, use search_docs or search_chats.
-8. For aggregations, always provide exact numbers, not approximations.
-9. If you cannot find the answer after thorough searching, say so honestly.
-10. Do NOT make up data — only report what the tools return.
-11. Keep final answers concise — 2-3 sentences unless the question asks for a detailed breakdown.
-12. After getting tool results, reason about them and decide if you need more data before answering."""
+6. For document/chat search, use SHORT keywords (1-2 words max). Try multiple searches with different terms if the first fails.
+7. When a question references internal chat threads, memos, or policies, use search_documents or search_chats first.
+8. For policy/contract questions (refund windows, loyalty rates, vendor contracts), use lookup_policy.
+9. For aggregations, always provide exact numbers, not approximations.
+10. If you cannot find the answer after thorough searching, say so honestly.
+11. Do NOT make up data — only report what the tools return.
+12. Keep final answers concise — 2-3 sentences unless the question asks for a detailed breakdown.
+13. After getting tool results, reason about them and decide if you need more data before answering."""
 
 
 # ---------------------------------------------------------------------------
