@@ -20,6 +20,7 @@ from langgraph.graph import END, StateGraph
 from openai import OpenAI
 
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from guardrail import SECURITY_PROMPT_ADDON, sanitize_tool_output
 from tools import TOOLS
 
 
@@ -62,6 +63,7 @@ TOOL_DEFS = _build_tool_definitions()
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are an enterprise data analyst agent for FahMai (ฟ้าใหม่), a multi-channel electronics retailer in Thailand.
+""" + SECURITY_PROMPT_ADDON + """
 
 Your job is to answer user questions about FahMai's business data by:
 1. Planning what information you need
@@ -190,10 +192,13 @@ def execute_tools(state: AgentState) -> AgentState:
         else:
             result = f"Unknown tool: {name}"
 
+        # Sanitize tool output before feeding it to the LLM
+        safe_result, was_injected = sanitize_tool_output(str(result), source_hint=name)
+
         new_messages.append({
             "role": "tool",
             "tool_call_id": tc["id"],
-            "content": str(result),
+            "content": safe_result,
         })
 
     return {

@@ -31,6 +31,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table as RichTable
 
 from config import DATA_DIR
+from guardrail import assess_query, dump_log, get_incidents
 from tools import _get_db  # Force DuckDB init
 
 console = Console()
@@ -138,6 +139,20 @@ def main():
     for qid, question in to_run:
         console.print(Panel(question, title=f"[bold yellow]{qid}[/]", border_style="blue"))
 
+        # --- Guardrail: pre-query assessment ---
+        gr = assess_query(question)
+        if not gr.is_safe:
+            console.print(f"[bold red][GUARDRAIL BLOCKED][/] {gr.reason} (pattern: {gr.pattern_label})")
+            answer = "ไม่มีข้อมูลนี้ในระบบของฟ้าใหม่"
+            results.append({
+                "id": qid,
+                "response": answer,
+                "iterations": 0,
+                "tool_calls": 0,
+                "time": 0.0,
+            })
+            continue
+
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=False) as progress:
             task = progress.add_task("Agent reasoning...", total=None)
             t_start = time.time()
@@ -167,6 +182,14 @@ def main():
         for r in results:
             table.add_row(r["id"], r["response"][:80], str(r["tool_calls"]), f"{r['time']:.1f}s")
         console.print(table)
+
+    # --- Guardrail incident report ---
+    incidents = get_incidents()
+    if incidents:
+        console.print(f"\n[bold red]Guardrail: {len(incidents)} incident(s) detected[/]")
+        console.print(dump_log())
+    else:
+        console.print("\n[dim]Guardrail: no injection incidents detected.[/]")
 
     # --- Output CSV for submission ---
     if args.output:
