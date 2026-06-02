@@ -241,7 +241,7 @@ graph TD
         CallModel --> Decision{LLM Decision}
         Decision -- "Tool Call" --> MCPClient[MCP Client]
         Decision -- "Final Answer" --> Final[Final Output]
-        MCPClient --> MCPServer[FastMCP Server (subprocess)]
+        MCPClient --> MCPServer["FastMCP Server (subprocess)"]
         MCPServer --> DuckDB[(DuckDB)]
         MCPServer --> DocIndex[(Doc Index)]
         MCPServer --> ChatCache[(Chat Cache)]
