@@ -35,21 +35,23 @@ Requires Python 3.10+. The default model is `gpt-4o-mini` (configurable via `LLM
 | `pipeline/tools.py` | Tool layer: SQL via DuckDB, document search, chat search, policy lookups |
 | `pipeline/pipeline.py` | Rich CLI entry point with demo, batch, and interactive modes |
 | `pipeline/guardrail.py` | Prompt injection defense: direct (regex gate) + indirect (tool output sanitization) |
+| `pipeline/server.py` | FastAPI HTTP server for competition back-test endpoints |
 | `pipeline/config.py` | Environment configuration and path resolution |
+| `pipeline/tests/` | Integration tests for all 5 tools |
 | `download_data.py` | Downloads the Kaggle competition dataset |
 
 The agent is given 5 tools: `explore_schema`, `query_sql`, `search_documents`, `search_chats`, `lookup_policy`. It decides which to use based on each question.
 
 ## Security (Guardrail)
 
-A dual-layer prompt injection defense runs on every question:
+A dual-layer prompt injection defense runs on every question, with tiered risk scoring:
 
 | Layer | What it does |
 |-------|-------------|
-| **Direct injection gate** | Regex scans the user's question before the agent sees it. Blocks ~23 attack patterns (EN + TH) — "ignore previous instructions", "you are now DAN", etc. Blocked questions get a safe default answer. |
-| **Indirect injection sanitization** | Every tool result is scanned before the LLM reads it. Injected spans (e.g. `[SYSTEM] Override...` hidden in chat transcripts) are redacted and replaced with `[GUARDRAIL-REDACTED:...]` markers. A warning header tells the LLM to treat the remaining content as data, not directives. |
+| **Direct injection gate** | Text normalization (NFKC, homoglyphs, leetspeak, zero-width stripping) → 23 weighted regex patterns (EN + TH) → tiered scoring: **SAFE / CAUTION / SUSPICIOUS / BLOCKED**. SUSPICIOUS-tier queries get a second-pass LLM judge. BLOCKED questions get a safe default answer. |
+| **Indirect injection sanitization** | 16 regex patterns scan every tool result before the LLM reads it. Injected spans (e.g. `[SYSTEM] Override...` hidden in chat transcripts) are redacted and replaced with `[GUARDRAIL-REDACTED:...]` markers. A warning header tells the LLM to treat the remaining content as data, not directives. |
 
-All detection is regex-based — zero extra LLM cost. An incident log is printed at the end of each run.
+Detection is primarily regex-based — zero extra LLM cost for most queries. An incident log is printed at the end of each run.
 
 ## Tools
 
@@ -90,6 +92,14 @@ See [the data bundle README](fah-mai-the-finale-enterprise-data-agentic-showdown
 ## Competition
 
 This is an entry for the [FahMai Kaggle competition](https://www.kaggle.com/competitions/fah-mai-the-finale-enterprise-data-agentic-showdown). Questions span four difficulty tiers (EASY, MED, HARD, XHARD) and cover cross-domain reasoning — requiring the agent to reconcile structured data with narrative evidence from memos, chats, and reports.
+
+## Running tests
+
+```bash
+pytest pipeline/tests/ -v
+```
+
+*Last reviewed: 2026-06-02*
 
 ## License
 
