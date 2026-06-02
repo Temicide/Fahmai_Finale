@@ -193,31 +193,31 @@ class TestLookupPolicy:
 
 
 # ---------------------------------------------------------------------------
-# TOOLS registry
+# Tool functions (TOOLS registry removed — tools are now MCP-served)
 # ---------------------------------------------------------------------------
 
-class TestToolRegistry:
-    def test_has_five_tools(self):
-        from tools import TOOLS
-        assert len(TOOLS) == 5
+class TestToolFunctionsExport:
+    def test_all_five_tools_are_functions(self):
+        import tools
+        funcs = {
+            tools.explore_schema,
+            tools.query_sql,
+            tools.search_documents,
+            tools.search_chats,
+            tools.lookup_policy,
+        }
+        for f in funcs:
+            assert callable(f), f"tool '{f.__name__}' is not callable"
 
-    def test_required_tool_names(self):
-        from tools import TOOLS
-        expected = {"explore_schema", "query_sql", "search_documents", "search_chats", "lookup_policy"}
-        assert set(TOOLS.keys()) == expected
+    def test_tools_are_importable_from_module(self):
+        import tools
+        for name in ("explore_schema", "query_sql", "search_documents", "search_chats", "lookup_policy"):
+            assert hasattr(tools, name), f"tools.{name} is missing"
 
-    def test_each_tool_has_fn_description_params(self):
-        from tools import TOOLS
-        for name, spec in TOOLS.items():
-            assert "fn" in spec, f"{name} missing fn"
-            assert "description" in spec, f"{name} missing description"
-            assert "parameters" in spec, f"{name} missing parameters"
-            assert callable(spec["fn"]), f"{name} fn not callable"
-
-    def test_old_tool_names_removed(self):
-        from tools import TOOLS
-        old_names = {"list_tables", "get_table_schema", "query_csv", "search_docs", "read_doc", "read_chat"}
-        assert not old_names.intersection(TOOLS.keys()), f"Old tools still present: {old_names & set(TOOLS.keys())}"
+    def test_no_tools_registry_exported(self):
+        """TOOLS registry has been removed — tools are now served via MCP (mcp_server.py)."""
+        import tools
+        assert not hasattr(tools, "TOOLS"), "TOOLS registry should not exist in tools.py"
 
 
 # ---------------------------------------------------------------------------
