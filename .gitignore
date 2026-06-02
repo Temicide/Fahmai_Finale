@@ -6,3 +6,4 @@ skills-lock.json
 .DS_Store
 .pytest_cache
 __pycache__
+resources
