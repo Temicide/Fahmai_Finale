@@ -23,7 +23,7 @@ Env: Copy .env.example to .env and set WAFER_API_KEY
 from __future__ import annotations
 
 import argparse
-import asyncio
+import anyio
 import csv
 import sys
 import time
@@ -61,8 +61,23 @@ DEMO_QUESTIONS = [
 
 def load_questions_csv(path: str | Path = "questions.csv") -> list[tuple[str, str]]:
     """Load all questions from the CSV file."""
+    possible_paths = [
+        Path(path),
+        Path("questions_answers") / "questions.csv",
+        Path(__file__).parent.parent / "questions_answers" / "questions.csv",
+        Path(__file__).parent.parent / "questions.csv",
+    ]
+    resolved_path = None
+    for p in possible_paths:
+        if p.exists():
+            resolved_path = p
+            break
+            
+    if not resolved_path:
+        resolved_path = Path(path)
+
     questions = []
-    with open(path, newline="", encoding="utf-8") as f:
+    with open(resolved_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             qid = row.get("id", "").strip()
@@ -101,7 +116,7 @@ def main():
     parser.add_argument("--output", "-o", type=str, help="Output CSV file for submissions")
     args = parser.parse_args()
 
-    asyncio.run(_run_pipeline(args))
+    anyio.run(_run_pipeline, args)
 
 
 async def _run_pipeline(args: argparse.Namespace) -> None:

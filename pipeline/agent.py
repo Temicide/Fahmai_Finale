@@ -17,7 +17,7 @@ import json
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from guardrail import SECURITY_PROMPT_ADDON, sanitize_tool_output
@@ -90,13 +90,13 @@ class AgentState(TypedDict):
 # Client
 # ---------------------------------------------------------------------------
 
-_client: OpenAI | None = None
+_client: AsyncOpenAI | None = None
 
 
-def _get_client() -> OpenAI:
+def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        _client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
     return _client
 
 
@@ -112,7 +112,7 @@ async def call_model(state: AgentState) -> AgentState:
         *state["messages"],
     ]
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=LLM_MODEL,
         messages=messages,
         tools=_openai_tool_defs,
