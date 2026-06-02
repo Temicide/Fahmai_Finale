@@ -32,13 +32,17 @@ Requires Python 3.10+. The default model is `gpt-4o-mini` (configurable via `LLM
 | Component | Description |
 |-----------|-------------|
 | `pipeline/agent.py` | LangGraph ReAct agent: loops between reasoning and tool calls (up to 15 iterations) |
-| `pipeline/tools.py` | Tool layer: SQL via DuckDB, document search, chat search, policy lookups |
+| `pipeline/tools.py` | Tool layer: 5 tools (SQL, doc search, chat search, policy lookup) |
 | `pipeline/pipeline.py` | Rich CLI entry point with demo, batch, and interactive modes |
-| `pipeline/guardrail.py` | Prompt injection defense: direct (regex gate) + indirect (tool output sanitization) |
-| `pipeline/server.py` | FastAPI HTTP server for competition back-test endpoints |
+| `pipeline/guardrail.py` | Dual-layer prompt injection defense (regex + LLM judge) |
+| `pipeline/server.py` | FastAPI HTTP server — `/agent/local` and `/agent/thaIllm` competition back-test endpoints |
+| `pipeline/mcp_server.py` | FastMCP server wrapping all 5 tools over stdio/SSE transport |
+| `pipeline/mcp_client.py` | Async MCP client adapter for agent → MCP discovery and invocation |
 | `pipeline/config.py` | Environment configuration and path resolution |
-| `pipeline/tests/` | Integration tests for all 5 tools |
+| `pipeline/tests/` | Integration tests for all 5 tools + MCP structure tests |
 | `download_data.py` | Downloads the Kaggle competition dataset |
+| `questions.csv` | 240 competition questions across 4 difficulty tiers |
+| `sample_submission.csv` | Expected submission format |
 
 The agent is given 5 tools: `explore_schema`, `query_sql`, `search_documents`, `search_chats`, `lookup_policy`. It decides which to use based on each question.
 
