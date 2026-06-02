@@ -1,13 +1,13 @@
 """
-FahMai Agentic Pipeline — LangGraph Agent
+FahMai Agentic Pipeline — LangGraph Agent (MCP Edition)
 
 Implements a ReAct-style tool-calling agent using LangGraph.
-The agent reasons about each question, calls tools (SQL, doc search, chat search),
-and synthesizes answers through iterative tool use.
+Tools are accessed through the MCP client (mcp_client.py) instead of
+direct function calls. This decouples the agent from the tool implementation.
 
 Architecture:
-    START → call_model → [has tool_calls?] → execute_tools → call_model
-                            ↓ (no)
+    START -> call_model -> [has tool_calls?] -> execute_tools -> call_model
+                            | (no)
                            END
 """
 
@@ -21,44 +21,23 @@ from openai import OpenAI
 
 from config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 from guardrail import SECURITY_PROMPT_ADDON, sanitize_tool_output
-from tools import TOOLS
+from mcp_client import FahMaiMCPClient
 
 
 # ---------------------------------------------------------------------------
-# OpenAI tool definitions (function-calling format)
+# MCP client (set once before running questions)
 # ---------------------------------------------------------------------------
 
-def _build_tool_definitions() -> list[dict[str, Any]]:
-    """Convert our tool registry into OpenAI-compatible tool definitions.
-    Optional parameters (those with defaults in the function) are not required."""
-    definitions = []
-    for name, spec in TOOLS.items():
-        props = {}
-        required = []
-        for pname, pinfo in spec["parameters"].items():
-            props[pname] = {
-                "type": pinfo["type"],
-                "description": pinfo["description"],
-            }
-            # Only mark as required if no default value is implied
-            required.append(pname)
-
-        definitions.append({
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": spec["description"],
-                "parameters": {
-                    "type": "object",
-                    "properties": props,
-                    "required": required,
-                },
-            },
-        })
-    return definitions
+_mcp_client: FahMaiMCPClient | None = None
+_openai_tool_defs: list[dict[str, Any]] = []
 
 
-TOOL_DEFS = _build_tool_definitions()
+async def init_mcp_client(client: FahMaiMCPClient) -> list[dict[str, Any]]:
+    global _mcp_client, _openai_tool_defs
+    _mcp_client = client
+    _openai_tool_defs = await client.to_openai_definitions()
+    return _openai_tool_defs
+
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -122,10 +101,10 @@ def _get_client() -> OpenAI:
 
 
 # ---------------------------------------------------------------------------
-# Nodes
+# Nodes (async — MCP calls are async)
 # ---------------------------------------------------------------------------
 
-def call_model(state: AgentState) -> AgentState:
+async def call_model(state: AgentState) -> AgentState:
     """Call the LLM with the conversation history and tool definitions."""
     client = _get_client()
     messages = [
@@ -136,7 +115,7 @@ def call_model(state: AgentState) -> AgentState:
     response = client.chat.completions.create(
         model=LLM_MODEL,
         messages=messages,
-        tools=TOOL_DEFS,
+        tools=_openai_tool_defs,
         tool_choice="auto",
     )
 
@@ -175,8 +154,8 @@ def call_model(state: AgentState) -> AgentState:
     }
 
 
-def execute_tools(state: AgentState) -> AgentState:
-    """Execute any tool calls from the last assistant message and append results."""
+async def execute_tools(state: AgentState) -> AgentState:
+    """Execute any tool calls from the last assistant message via MCP client."""
     last_msg = state["messages"][-1]
     tool_calls = last_msg.get("tool_calls", [])
     new_messages = list(state["messages"])
@@ -188,15 +167,11 @@ def execute_tools(state: AgentState) -> AgentState:
         except json.JSONDecodeError:
             args = {}
 
-        if name in TOOLS:
-            try:
-                result = TOOLS[name]["fn"](**args)
-            except Exception as e:
-                result = f"Tool execution error: {e}"
-        else:
-            result = f"Unknown tool: {name}"
+        try:
+            result = await _mcp_client.call_tool(name, args)
+        except Exception as e:
+            result = f"Tool execution error: {e}"
 
-        # Sanitize tool output before feeding it to the LLM
         safe_result, was_injected = sanitize_tool_output(str(result), source_hint=name)
 
         new_messages.append({
@@ -214,7 +189,7 @@ def execute_tools(state: AgentState) -> AgentState:
 
 
 def should_continue(state: AgentState) -> Literal["execute_tools", "__end__"]:
-    """Route: if the last message has tool_calls → execute them, else end."""
+    """Route: if the last message has tool_calls -> execute them, else end."""
     last_msg = state["messages"][-1]
     if last_msg.get("tool_calls"):
         return "execute_tools"
@@ -268,8 +243,11 @@ def get_agent():
     return _agent
 
 
-def run_question(question: str, verbose: bool = False) -> dict[str, Any]:
-    """Run a single question through the agent and return the answer with metadata."""
+async def run_question(question: str, verbose: bool = False) -> dict[str, Any]:
+    """Run a single question through the agent and return the answer with metadata.
+
+    Requires init_mcp_client() to have been called first.
+    """
     agent = get_agent()
     initial_state: AgentState = {
         "messages": [{"role": "user", "content": question}],
@@ -278,7 +256,7 @@ def run_question(question: str, verbose: bool = False) -> dict[str, Any]:
         "total_output_tokens": 0,
     }
 
-    result = agent.invoke(initial_state)
+    result = await agent.ainvoke(initial_state)
 
     final_answer = ""
     tool_calls_made = []
